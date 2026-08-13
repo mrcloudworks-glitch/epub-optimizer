@@ -50,6 +50,22 @@ Cover detection is robust: `<meta name="cover">`, EPUB 3
 wrappers are all unwrapped and recognized. Toggle it off to keep covers
 untouched (they are still downscaled/compressed like any image).
 
+### 2b. Replace the original cover
+Pick any image file (PNG/JPEG/WebP/GIF/BMP/TIFF) in the **"Replace original
+cover"** field — it is applied to every EPUB in the batch:
+
+- The chosen image **replaces the book's original cover**, then the 3:4
+  blurred-sidebar treatment above is applied **on top of the replacement**
+  (sharp replacement cover centered over its own blurred fill — no white
+  pillarbox/letterbox bars).
+- If a book has **no detectable cover**, the replacement is injected: a new
+  image entry is added, registered in the OPF manifest, declared via
+  `<meta name="cover">`, and shown on the first spine page.
+- Works with the blur toggle on *or* off (blur off = the replacement is
+  optimized like any other image, no compositing).
+- The original EPUB file is never modified; the composited result lands in
+  the output file as usual.
+
 ### 3. PySide6 desktop GUI
 - Modern dark **and** light themes (toggle in the header, remembered).
 - **Drag-and-drop zone** + file browser; single or **batch** processing.
@@ -57,6 +73,9 @@ untouched (they are still downscaled/compressed like any image).
   `Kindle 10th Gen Paperwhite (1072×1448)`.
 - **Image quality slider** (50–100%, default 80%) and a
   **"Blurred sidebars for cover"** toggle.
+- **"Replace original cover"** picker: choose an image that replaces every
+  book's cover (still blurred into a 3:4 canvas), or clear it to keep
+  original covers.
 - Non-blocking **`QThread` worker** — the UI stays responsive; a progress
   bar and a timestamped, color-coded log console show real-time status.
 - Cancel mid-batch (partial output files are cleaned up).
@@ -99,7 +118,7 @@ The single executable in `dist/` runs without a Python installation.
 |-------|--------------|
 | Read  | The EPUB is opened as a ZIP; every entry is read into memory (no temp files). |
 | OPF   | The package document is located via `META-INF/container.xml` (with a `.opf` fallback). |
-| Cover | Detected, rebuilt on a 3:4 canvas with blurred fill, and all references are rewritten (only when the toggle is on). |
+| Cover | Detected, rebuilt on a 3:4 canvas with blurred fill, and all references are rewritten (only when the toggle is on). A user-picked replacement image is swapped in first — or injected when the book has no cover. |
 | Images| Each raster image is orientation-corrected, downscaled to the device, flattened, and re-encoded as JPEG when that shrinks it. |
 | Write | Atomic re-pack (temp file + rename): `mimetype` stored uncompressed first, everything else deflated at level 9. |
 
@@ -110,7 +129,7 @@ epub_optimizer/
 ├── core/                      # GUI-independent pipeline (no Qt imports)
 │   ├── devices.py             #   Kindle device presets & 3:4 canvas math
 │   ├── image_processor.py     #   Pillow: downscale, flatten, JPEG encode
-│   ├── cover_processor.py     #   cover detection, blur composite, OPF surgery
+│   ├── cover_processor.py     #   cover detection, blur composite, OPF surgery, cover injection
 │   ├── optimizer.py           #   EpubOptimizer orchestrator (progress/log callbacks)
 │   └── exceptions.py          #   error hierarchy incl. OptimizerCancelled
 ├── ui/                        # PySide6 application layer

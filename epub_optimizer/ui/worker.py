@@ -39,6 +39,7 @@ class OptimizeWorker(QThread):
         quality: int,
         blur_cover: bool,
         output_dir: str,
+        replacement_cover_path: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -47,6 +48,7 @@ class OptimizeWorker(QThread):
         self._quality = quality
         self._blur_cover = blur_cover
         self._output_dir = output_dir
+        self._replacement_cover_path = replacement_cover_path
         self._cancel_requested = False
         #: Outputs reserved during THIS batch (collision detection).
         self._used_outputs: set[str] = set()
@@ -77,6 +79,7 @@ class OptimizeWorker(QThread):
                     preset=preset,
                     quality=self._quality,
                     blur_cover=self._blur_cover,
+                    replacement_cover_path=self._replacement_cover_path,
                     progress_cb=lambda percent, msg: self.progress.emit(percent, msg),
                     log_cb=lambda level, msg: self.log.emit(level, msg),
                     cancel_check=lambda: self._cancel_requested,

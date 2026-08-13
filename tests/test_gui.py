@@ -110,6 +110,52 @@ def test_batch_run_through_worker(window, qapp, tmp_path) -> None:
     assert window.start_button.isEnabled() is True  # re-enabled after run
 
 
+def test_replacement_cover_batch_run(window, qapp, tmp_path) -> None:
+    """Setting a replacement cover passes it through to the worker."""
+    import zipfile
+
+    from PIL import Image
+
+    epub = tmp_path / "book.epub"
+    build_epub(str(epub))
+    replacement = tmp_path / "replacement.png"
+    Image.new("RGB", (900, 1200), (12, 140, 90)).save(str(replacement), format="PNG")
+
+    window.replacement_edit.setText(str(replacement))
+    window.add_files([str(epub)])
+    assert window.start_button.isEnabled() is True
+
+    window._start_batch()
+    assert window.worker is not None
+    assert window.worker._replacement_cover_path == str(replacement)
+
+    loop = QEventLoop()
+    poll = QTimer()
+    poll.timeout.connect(
+        lambda: loop.quit()
+        if window.worker is None or not window.worker.isRunning()
+        else None
+    )
+    poll.start(25)
+    QTimer.singleShot(60000, loop.quit)
+    loop.exec()
+    poll.stop()
+    for _ in range(5):
+        qapp.processEvents()
+
+    output = tmp_path / "book_optimized.epub"
+    assert output.exists() and output.stat().st_size > 0
+    with zipfile.ZipFile(str(output)) as archive:
+        names = archive.namelist()
+    assert any(n.endswith("cover_optimized.jpg") for n in names), (
+        "replacement cover must be composited into the output"
+    )
+
+    # Clearing the replacement resets the field.
+    window._reset_replacement_cover()
+    assert window.replacement_edit.text() == ""
+
+
 def test_same_stem_batch_collision_is_unique(window, tmp_path) -> None:
     """Two sources sharing a stem must not clobber each other's output."""
     from epub_optimizer.ui.worker import OptimizeWorker

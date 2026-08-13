@@ -35,6 +35,7 @@ from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 from epub_optimizer.core.devices import DevicePreset
 from epub_optimizer.core.image_processor import (
     flatten_to_rgb,
+    image_info,
     is_raster_image,
     is_text_entry,
 )
@@ -61,6 +62,28 @@ _SVG_EMBEDDED_IMAGE = re.compile(
     r"""(?:xlink:href|href)\s*=\s*["']([^"']+\.(?:png|jpe?g|gif|webp|bmp))["']""",
     re.IGNORECASE,
 )
+
+#: Detected Pillow format -> file extension used for injected covers.
+_FORMAT_EXTENSIONS: dict[str, str] = {
+    "JPEG": ".jpg",
+    "PNG": ".png",
+    "GIF": ".gif",
+    "WEBP": ".webp",
+    "BMP": ".bmp",
+    "TIFF": ".tiff",
+}
+
+#: Extension -> OPF media-type (used for injected cover manifest items).
+_MEDIA_TYPES: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
 
 
 @dataclass(frozen=True)
@@ -356,6 +379,107 @@ def build_blurred_cover(
         subsampling=2 if quality <= 90 else 0,
     )
     return buffer.getvalue(), canvas_width, canvas_height
+
+
+# ---------------------------------------------------------------------------
+# Cover injection (no cover found, but a replacement image was provided)
+# ---------------------------------------------------------------------------
+
+
+def _sanitize_stem(name: str) -> str:
+    """Turn a file name into a safe zip entry stem (keeps letters/digits/._-)."""
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", posixpath.basename(name))
+    return stem.strip("._")
+
+
+def inject_cover(
+    entries: dict[str, bytes],
+    opf_zip_path: str,
+    image_data: bytes,
+    source_path: str | None = None,
+) -> CoverInfo:
+    """Add a cover to a book that has none, from a replacement image.
+
+    Performs the full surgery so Kindle (and other readers) recognize the
+    new cover:
+
+    1. add the replacement image as a new archive entry,
+    2. register it in the OPF manifest (with the right ``media-type``),
+    3. add ``<meta name="cover" .../>`` to the OPF metadata,
+    4. insert an ``<img>`` at the top of the first spine document so the
+       cover is also visible as the book's first page.
+
+    Returns a :class:`CoverInfo` for the new entry, ready for the standard
+    blurred-composite + ``apply_cover`` flow (which renames it to
+    ``<stem>_optimized.jpg`` and rewrites every reference).
+    """
+    opf_dir = posixpath.dirname(opf_zip_path)
+    _, _, fmt = image_info(image_data)
+    ext = _FORMAT_EXTENSIONS.get(fmt, ".jpg")
+    media_type = _MEDIA_TYPES.get(ext, "image/jpeg")
+    stem = _sanitize_stem(source_path or "replaced_cover")
+    stem = posixpath.splitext(stem)[0] or "replaced_cover"
+
+    # Pick an entry path that does not collide with an existing file.
+    folder = posixpath.join(opf_dir, "images") if opf_dir else "images"
+    candidate = posixpath.join(folder, f"{stem}{ext}")
+    counter = 2
+    while candidate in entries:
+        candidate = posixpath.join(folder, f"{stem}_{counter}{ext}")
+        counter += 1
+    entries[candidate] = image_data
+
+    item_id = "cover-image"
+
+    # OPF manifest item + <meta name="cover">.
+    if opf_zip_path in entries:
+        opf_text = _decode(entries[opf_zip_path])
+        href = posixpath.relpath(candidate, opf_dir)
+        used_ids = set(re.findall(r'id\s*=\s*["\']([^"\']+)["\']', opf_text))
+        item_id = "cover-image"
+        counter = 2
+        while item_id in used_ids:
+            item_id = f"cover-image-{counter}"
+            counter += 1
+        item_tag = (
+            f'<item id="{item_id}" href="{href}" media-type="{media_type}"/>'
+        )
+        manifest_close = re.search(r"</manifest\s*>", opf_text, re.IGNORECASE)
+        if manifest_close:
+            opf_text = (
+                opf_text[: manifest_close.start()]
+                + item_tag
+                + opf_text[manifest_close.start() :]
+            )
+        else:  # pathological OPF without <manifest> — still try to add it
+            package_close = re.search(r"</package\s*>", opf_text, re.IGNORECASE)
+            if package_close:
+                opf_text = (
+                    opf_text[: package_close.start()]
+                    + item_tag
+                    + opf_text[package_close.start() :]
+                )
+
+        opf_text = _ensure_cover_meta(opf_text, item_id, href, opf_dir)
+        entries[opf_zip_path] = opf_text.encode("utf-8")
+
+        # Show the cover as the first page: insert an <img> at the top of
+        # the first spine document.
+        documents = _spine_documents(opf_text, opf_dir, entries)
+        if documents:
+            doc = documents[0]
+            doc_text = _decode(entries[doc])
+            img_tag = f'<div class="cover-image"><img src="{href}" alt="Cover"/></div>'
+            body_open = re.search(r"<body\b[^>]*>", doc_text, re.IGNORECASE)
+            if body_open:
+                doc_text = (
+                    doc_text[: body_open.end()]
+                    + img_tag
+                    + doc_text[body_open.end() :]
+                )
+                entries[doc] = doc_text.encode("utf-8")
+
+    return CoverInfo(candidate, item_id, "injected replacement cover")
 
 
 # ---------------------------------------------------------------------------

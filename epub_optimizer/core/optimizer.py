@@ -32,6 +32,7 @@ from epub_optimizer.core.cover_processor import (
     apply_cover,
     build_blurred_cover,
     find_cover,
+    inject_cover,
     update_manifest_media_type,
 )
 from epub_optimizer.core.devices import DevicePreset
@@ -78,6 +79,7 @@ class OptimizationStats:
     images_total: int = 0
     images_changed: int = 0
     cover_processed: bool = False
+    cover_replaced: bool = False
     cover_old: str | None = None
     cover_new: str | None = None
     elapsed: float = 0.0
@@ -100,6 +102,7 @@ class EpubOptimizer:
         preset: DevicePreset,
         quality: int = 80,
         blur_cover: bool = True,
+        replacement_cover_path: str | None = None,
         progress_cb: ProgressCallback | None = None,
         log_cb: LogCallback | None = None,
         cancel_check: CancelCheck | None = None,
@@ -109,6 +112,9 @@ class EpubOptimizer:
         self.preset = preset
         self.quality = int(quality)
         self.blur_cover = bool(blur_cover)
+        #: Optional image file that replaces the book's cover before the
+        #: 3:4 blurred treatment is applied.
+        self.replacement_cover_path = replacement_cover_path
         self._progress_cb = progress_cb or (lambda _percent, _msg: None)
         self._log_cb = log_cb or (lambda _level, _msg: None)
         self._cancel_check = cancel_check or (lambda: False)
@@ -135,37 +141,76 @@ class EpubOptimizer:
             input_size=sum(len(data) for data in entries.values()),
         )
 
-        # --- Cover: 3:4 blurred composite ---------------------------------
+        # --- Cover: optional replacement + 3:4 blurred composite ----------
         new_cover_path: str | None = None
-        if self.blur_cover:
+        replacement_data: bytes | None = None
+        if self.replacement_cover_path:
+            replacement_data = self._load_replacement_cover()
+            self._maybe_cancel()
+
+        cover = None
+        if self.blur_cover or replacement_data is not None:
             cover = find_cover(entries, opf_path)
-            if cover is not None:
-                stats.cover_old = cover.zip_path
-                old_data = entries[cover.zip_path]
-                old_w, old_h, _ = image_info(old_data)
-                self._report_progress(
-                    _PROGRESS["cover"],
-                    f"Cover found ({cover.method}): {cover.zip_path} "
-                    f"({old_w}×{old_h}) — building 3:4 blurred composite…",
+
+        if replacement_data is not None:
+            if cover is None:
+                # No cover in this book — add the replacement as a new cover.
+                cover = inject_cover(
+                    entries, opf_path, replacement_data,
+                    source_path=self.replacement_cover_path,
                 )
-                self._maybe_cancel()
-                new_data, canvas_w, canvas_h = build_blurred_cover(
-                    old_data, self.preset, self.quality
-                )
-                new_cover_path = apply_cover(entries, opf_path, cover, new_data)
-                stats.cover_processed = True
-                stats.cover_new = new_cover_path
+                stats.cover_replaced = True
                 self._log(
-                    "success",
-                    f"Cover optimized: {old_w}×{old_h} → {canvas_w}×{canvas_h} "
-                    f"3:4 canvas, JPEG q{self.quality} ({fmt_bytes(len(new_data))})",
+                    "info",
+                    "No existing cover found — added "
+                    f"'{cover.zip_path}' as the new cover entry.",
                 )
             else:
+                # Swap the original cover bytes for the replacement image.
+                stats.cover_old = cover.zip_path
+                original_w, original_h, _ = image_info(entries[cover.zip_path])
+                entries[cover.zip_path] = replacement_data
+                stats.cover_replaced = True
                 self._log(
-                    "warning",
-                    "No cover image found — 'blurred sidebars' skipped "
-                    "(images are still optimized).",
+                    "success",
+                    "Replaced original cover "
+                    f"({original_w}×{original_h}) with "
+                    f"'{os.path.basename(self.replacement_cover_path)}'.",
                 )
+
+        if cover is not None and self.blur_cover:
+            stats.cover_old = cover.zip_path
+            source_data = entries[cover.zip_path]
+            src_w, src_h, _ = image_info(source_data)
+            self._report_progress(
+                _PROGRESS["cover"],
+                f"Cover ({cover.method}): {cover.zip_path} ({src_w}×{src_h}) — "
+                "building 3:4 blurred composite…",
+            )
+            self._maybe_cancel()
+            new_data, canvas_w, canvas_h = build_blurred_cover(
+                source_data, self.preset, self.quality
+            )
+            new_cover_path = apply_cover(entries, opf_path, cover, new_data)
+            stats.cover_processed = True
+            stats.cover_new = new_cover_path
+            self._log(
+                "success",
+                f"Cover optimized: {src_w}×{src_h} → {canvas_w}×{canvas_h} "
+                f"3:4 canvas, JPEG q{self.quality} ({fmt_bytes(len(new_data))})",
+            )
+        elif cover is None and (self.blur_cover or replacement_data is not None):
+            self._log(
+                "warning",
+                "No cover image found — cover step skipped "
+                "(images are still optimized).",
+            )
+        elif replacement_data is not None:
+            self._log(
+                "info",
+                "Cover replaced — 'blurred sidebars' is off, so the new cover "
+                "is optimized together with the other images.",
+            )
         self._maybe_cancel()
 
         # --- Inline images -------------------------------------------------
@@ -343,6 +388,29 @@ class EpubOptimizer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _load_replacement_cover(self) -> bytes:
+        """Read and validate the user-selected replacement cover image."""
+        path = self.replacement_cover_path
+        if not path:
+            return b""
+        if not os.path.isfile(path):
+            raise EpubOptimizerError(
+                f"Replacement cover file not found: {path}"
+            )
+        with open(path, "rb") as handle:
+            data = handle.read()
+        width, height, fmt = image_info(data)
+        if not width:
+            raise EpubOptimizerError(
+                f"Replacement cover is not a readable image: {path}"
+            )
+        self._log(
+            "info",
+            f"Replacement cover loaded: {os.path.basename(path)} "
+            f"({width}×{height} {fmt})",
+        )
+        return data
 
     def _maybe_cancel(self) -> None:
         """Raise :class:`OptimizerCancelled` when the user hit Cancel."""

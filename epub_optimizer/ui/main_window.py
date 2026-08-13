@@ -40,9 +40,15 @@ _SETTINGS = {
     "device": "device",
     "quality": "quality",
     "blur_cover": "blur_cover",
+    "replacement_cover": "replacement_cover",
     "output_dir": "output_dir",
     "dark_mode": "dark_mode",
 }
+
+#: Image file filters for the replacement-cover picker.
+_IMAGE_FILTER = (
+    "Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.tif *.tiff);;All files (*)"
+)
 
 _QUALITY_MIN, _QUALITY_MAX, _QUALITY_DEFAULT = 50, 100, 80
 
@@ -183,6 +189,26 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(self.blur_checkbox)
         layout.addWidget(settings_group)
 
+        # --- Replace cover -------------------------------------------------
+        replacement_group = QGroupBox("Replace original cover (optional)")
+        replacement_row = QHBoxLayout(replacement_group)
+        self.replacement_edit = QLineEdit()
+        self.replacement_edit.setReadOnly(True)
+        self.replacement_edit.setPlaceholderText("None — keep the book's cover")
+        self.replacement_edit.setToolTip(
+            "Applied to every EPUB in the queue: the chosen image replaces "
+            "the book's original cover, then the 3:4 blurred-sidebar "
+            "treatment is applied to it."
+        )
+        self.replacement_browse = QPushButton("Browse…")
+        self.replacement_clear = QPushButton("None")
+        self.replacement_browse.clicked.connect(self._choose_replacement_cover)
+        self.replacement_clear.clicked.connect(self._reset_replacement_cover)
+        replacement_row.addWidget(self.replacement_edit, stretch=1)
+        replacement_row.addWidget(self.replacement_browse)
+        replacement_row.addWidget(self.replacement_clear)
+        layout.addWidget(replacement_group)
+
         # --- Output folder ---------------------------------------------
         output_group = QGroupBox("Save to")
         output_row = QHBoxLayout(output_group)
@@ -267,6 +293,11 @@ class MainWindow(QMainWindow):
         self.blur_checkbox.setChecked(
             self.settings.value(_SETTINGS["blur_cover"], True, type=bool)
         )
+        replacement = self.settings.value(
+            _SETTINGS["replacement_cover"], "", type=str
+        )
+        if replacement and os.path.isfile(replacement):
+            self.replacement_edit.setText(replacement)
         output_dir = self.settings.value(_SETTINGS["output_dir"], "", type=str)
         if output_dir:
             self.output_edit.setText(output_dir)
@@ -276,6 +307,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue(_SETTINGS["quality"], self.quality_slider.value())
         self.settings.setValue(
             _SETTINGS["blur_cover"], self.blur_checkbox.isChecked()
+        )
+        self.settings.setValue(
+            _SETTINGS["replacement_cover"], self.replacement_edit.text()
         )
         self.settings.setValue(_SETTINGS["output_dir"], self.output_edit.text())
         self.settings.setValue(_SETTINGS["dark_mode"], self.dark)
@@ -351,6 +385,22 @@ class MainWindow(QMainWindow):
     def _reset_output_dir(self) -> None:
         self.output_edit.clear()
 
+    # ------------------------------------------------------------------
+    # Replacement cover
+    # ------------------------------------------------------------------
+
+    def _choose_replacement_cover(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select replacement cover image", "", _IMAGE_FILTER
+        )
+        if path:
+            self.replacement_edit.setText(path)
+            self.append_log("info", f"Replacement cover set: {path}")
+
+    def _reset_replacement_cover(self) -> None:
+        self.replacement_edit.clear()
+        self.append_log("info", "Replacement cover cleared — original covers kept.")
+
     def _output_dir_for(self, source: str) -> str:
         chosen = self.output_edit.text().strip()
         return chosen or (os.path.dirname(source) or ".")
@@ -368,6 +418,15 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return
 
+        replacement = self.replacement_edit.text().strip()
+        if replacement and not os.path.isfile(replacement):
+            QMessageBox.warning(
+                self,
+                "Replacement cover",
+                f"Replacement cover file not found:\n{replacement}",
+            )
+            return
+
         self._save_settings()
         self.progress_bar.setValue(0)
         self.status_label.setText("Starting…")
@@ -379,6 +438,7 @@ class MainWindow(QMainWindow):
             quality=self.quality_slider.value(),
             blur_cover=self.blur_checkbox.isChecked(),
             output_dir=self.output_edit.text().strip(),
+            replacement_cover_path=replacement or None,
             parent=self,
         )
         self.worker.file_started.connect(self._on_file_started)
@@ -464,6 +524,8 @@ class MainWindow(QMainWindow):
         self.device_combo.setEnabled(not running)
         self.quality_slider.setEnabled(not running)
         self.blur_checkbox.setEnabled(not running)
+        self.replacement_browse.setEnabled(not running)
+        self.replacement_clear.setEnabled(not running)
         self.output_browse.setEnabled(not running)
         self.output_clear.setEnabled(not running)
 

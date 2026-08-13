@@ -10,9 +10,20 @@ import pytest
 from PIL import Image
 
 from epub_optimizer.core.devices import get_device_preset
-from epub_optimizer.core.exceptions import OptimizerCancelled
+from epub_optimizer.core.exceptions import (
+    EpubOptimizerError,
+    OptimizerCancelled,
+)
 from epub_optimizer.core.optimizer import EpubOptimizer
 from tests.fixtures import build_epub
+
+
+def solid_image(
+    path: str, size: tuple[int, int] = (1000, 1400), color: tuple[int, int, int] = (200, 30, 30)
+) -> str:
+    """Write a solid-color PNG to ``path`` and return it (replacement cover)."""
+    Image.new("RGB", size, color).save(path, format="PNG")
+    return path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -270,3 +281,122 @@ def test_stats_reporting(tmp_path) -> None:
     assert stats.output_size == os.path.getsize(output)
     assert stats.savings_percent > 0
     assert stats.elapsed > 0
+
+
+# ---------------------------------------------------------------------------
+# Replacement-cover tests
+# ---------------------------------------------------------------------------
+
+
+def test_replacement_cover_replaces_and_blurs(tmp_path) -> None:
+    """A picked image replaces the original cover AND gets the 3:4 blur."""
+    source = str(tmp_path / "book.epub")
+    build_epub(source)
+    replacement = solid_image(str(tmp_path / "my_cover.png"))
+
+    output = str(tmp_path / "out.epub")
+    stats = EpubOptimizer(
+        source_path=source,
+        output_path=output,
+        preset=get_device_preset("kindle_10th_basic"),
+        quality=80,
+        blur_cover=True,
+        replacement_cover_path=replacement,
+    ).run()
+
+    assert stats.cover_replaced is True
+    assert stats.cover_processed is True
+    assert stats.cover_old == "OEBPS/images/cover.png"
+    assert stats.cover_new == "OEBPS/images/cover_optimized.jpg"
+
+    entries = read_output(tmp_path)
+    assert "OEBPS/images/cover.png" not in entries, "original cover must be gone"
+    cover = entries["OEBPS/images/cover_optimized.jpg"]
+    width, height = image_size(cover)
+    assert (width, height) == (600, 800)
+
+    # The composite is built FROM the replacement: center pixel = its color.
+    center = Image.open(io.BytesIO(cover)).convert("RGB").getpixel((300, 400))
+    assert all(abs(center[i] - (200, 30, 30)[i]) <= 12 for i in range(3)), (
+        f"cover should be built from the replacement, center={center}"
+    )
+
+    # References rewritten + manifest updated.
+    titlepage = entries["OEBPS/titlepage.xhtml"].decode("utf-8")
+    assert "cover_optimized.jpg" in titlepage and "cover.png" not in titlepage
+    opf = entries["OEBPS/content.opf"].decode("utf-8")
+    assert 'href="images/cover_optimized.jpg" media-type="image/jpeg"' in opf
+    assert '<meta name="cover"' in opf
+
+
+def test_replacement_cover_injected_when_no_cover(tmp_path) -> None:
+    """Books without a detectable cover get the replacement injected."""
+    source = str(tmp_path / "book.epub")
+    build_epub(source, include_cover=False)
+    replacement = solid_image(
+        str(tmp_path / "custom_cover.png"), size=(600, 900), color=(40, 90, 200)
+    )
+
+    stats = EpubOptimizer(
+        source_path=source,
+        output_path=str(tmp_path / "out.epub"),
+        preset=get_device_preset("kindle_10th_basic"),
+        quality=80,
+        blur_cover=True,
+        replacement_cover_path=replacement,
+    ).run()
+
+    assert stats.cover_replaced is True
+    assert stats.cover_processed is True
+
+    entries = read_output(tmp_path)
+    cover_name = next(n for n in entries if n.endswith("_optimized.jpg"))
+    width, height = image_size(entries[cover_name])
+    assert abs(width * 4 - height * 3) <= 2
+
+    opf = entries["OEBPS/content.opf"].decode("utf-8")
+    assert '<meta name="cover"' in opf
+    assert f'href="images/{cover_name.split("/")[-1]}"' in opf
+    assert 'media-type="image/jpeg"' in opf
+
+    # The injected cover is shown on the first spine page.
+    titlepage = entries["OEBPS/titlepage.xhtml"].decode("utf-8")
+    assert cover_name.split("/")[-1] in titlepage
+
+
+def test_replacement_cover_without_blur(tmp_path) -> None:
+    """Replacement still works when blurred sidebars are disabled."""
+    source = str(tmp_path / "book.epub")
+    build_epub(source)
+    replacement = solid_image(str(tmp_path / "plain_cover.png"), color=(10, 200, 60))
+
+    stats = EpubOptimizer(
+        source_path=source,
+        output_path=str(tmp_path / "out.epub"),
+        preset=get_device_preset("kindle_10th_basic"),
+        quality=80,
+        blur_cover=False,
+        replacement_cover_path=replacement,
+    ).run()
+
+    assert stats.cover_replaced is True
+    assert stats.cover_processed is False
+
+    entries = read_output(tmp_path)
+    # The entry name is kept; the replacement is optimized like any image.
+    cover = entries["OEBPS/images/cover.png"]
+    width, height = image_size(cover)
+    assert width <= 600 and height <= 800
+    assert '<meta name="cover"' in entries["OEBPS/content.opf"].decode("utf-8")
+
+
+def test_replacement_cover_missing_file_raises(tmp_path) -> None:
+    source = str(tmp_path / "book.epub")
+    build_epub(source)
+    with pytest.raises(EpubOptimizerError):
+        EpubOptimizer(
+            source_path=source,
+            output_path=str(tmp_path / "out.epub"),
+            preset=get_device_preset("kindle_10th_basic"),
+            replacement_cover_path=str(tmp_path / "does_not_exist.png"),
+        ).run()
