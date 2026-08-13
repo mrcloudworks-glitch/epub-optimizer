@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEventLoop, QSettings, QTimer
+from PySide6.QtCore import QEventLoop, QSettings, Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from epub_optimizer.core.devices import DEVICE_PRESETS
@@ -54,6 +54,41 @@ def test_theme_toggle(window) -> None:
     assert window.dark is not initial
     window._toggle_theme()
     assert window.dark is initial
+
+
+def test_scroll_area_prevents_clipping(window, qapp) -> None:
+    """Small windows must scroll on BOTH axes instead of cutting text."""
+    scroll = window._scroll_area
+    assert scroll is not None
+    assert scroll.widgetResizable() is True
+    assert (
+        scroll.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+    assert (
+        scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+
+    # The scroll content has a fixed minimum width so text is never squeezed.
+    assert scroll.widget().minimumWidth() >= 680
+
+    # Shrink the window to its minimum: both scrollbars must become active
+    # (maximum > 0) so every control stays reachable.
+    window.resize(1, 1)  # clamped to the window's minimum size
+    qapp.processEvents()
+    assert window.width() <= 700, f"window did not shrink: {window.width()}"
+    assert scroll.verticalScrollBar().maximum() > 0, (
+        "vertical scrollbar missing on a small window"
+    )
+    assert scroll.horizontalScrollBar().maximum() > 0, (
+        "horizontal scrollbar missing on a small window"
+    )
+
+    # Enlarge the window again: scrollbars go away (content fills the space).
+    window.resize(1200, 900)
+    qapp.processEvents()
+    assert scroll.verticalScrollBar().maximum() == 0
+    assert scroll.horizontalScrollBar().maximum() == 0
 
 
 def test_add_remove_clear_files(window, tmp_path) -> None:

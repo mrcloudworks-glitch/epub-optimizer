@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSplitter,
     QVBoxLayout,
@@ -66,7 +68,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Kindle EPUB Optimizer")
         self.resize(1080, 720)
-        self.setMinimumSize(860, 560)
+        # Small windows are fine: the whole layout lives inside a QScrollArea,
+        # so vertical AND horizontal scrollbars appear instead of cutting text.
+        self.setMinimumSize(560, 420)
 
         self._build_ui()
         self._restore_settings()
@@ -79,10 +83,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        # The whole interface is built into this widget, which is then placed
+        # inside a QScrollArea (see below) so that on small screens neither
+        # horizontal nor vertical content is ever clipped.
         central = QWidget()
+        central.setObjectName("scrollContent")
         root = QVBoxLayout(central)
         root.setContentsMargins(16, 12, 16, 10)
         root.setSpacing(10)
+
+        # A sensible minimum content width: below this the window scrolls
+        # horizontally instead of squeezing/cutting the settings text.
+        central.setMinimumWidth(680)
 
         root.addLayout(self._build_header())
 
@@ -95,7 +107,22 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter, stretch=1)
 
         root.addLayout(self._build_progress_row())
-        self.setCentralWidget(central)
+
+        # Scroll area with BOTH axes: scrollbars appear as needed when the
+        # window is smaller than the content, and disappear again when the
+        # window is large enough (widgetResizable stretches the content to
+        # fill the available space whenever possible).
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_area.setWidget(central)
+        self.setCentralWidget(self._scroll_area)
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
@@ -106,6 +133,7 @@ class MainWindow(QMainWindow):
             "blurred 3:4 covers, maximum ZIP compression"
         )
         subtitle.setStyleSheet("font-size: 11px;")
+        subtitle.setWordWrap(True)  # wrap on narrow windows instead of clipping
 
         title_block = QVBoxLayout()
         title_block.setSpacing(0)

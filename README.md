@@ -68,6 +68,9 @@ cover"** field — it is applied to every EPUB in the batch:
 
 ### 3. PySide6 desktop GUI
 - Modern dark **and** light themes (toggle in the header, remembered).
+- The whole interface sits inside a **scroll area**: on small screens both
+  **horizontal and vertical scrollbars** appear as needed, so no text or
+  control is ever cut off (content keeps a readable minimum width).
 - **Drag-and-drop zone** + file browser; single or **batch** processing.
 - Device dropdown: `Kindle 10th Gen Basic (600×800)` and
   `Kindle 10th Gen Paperwhite (1072×1448)`.

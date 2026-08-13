@@ -62,6 +62,8 @@ QWidget {
     color: $text;
 }
 QMainWindow, QDialog { background: $bg; }
+QScrollArea { background: transparent; border: none; }
+QWidget#scrollContent { background: $bg; }
 QToolTip {
     background: $surface_alt;
     color: $text;
